@@ -28,7 +28,7 @@ app.use(cors({
     if (!origin || ALLOWED_ORIGINS.includes(origin)) callback(null, true);
     else callback(new Error(`CORS 차단: ${origin}`));
   },
-  methods: ["GET", "POST", "DELETE", "PATCH"],
+  methods: ["GET", "POST", "DELETE", "PATCH", "PUT"],
 }));
 
 // 헬스체크
@@ -49,7 +49,7 @@ app.post("/api/track", async (req, res) => {
       "app_open", "cafe_click", "cafe_detail_view",
       "search", "filter_apply", "filter_button_tap", "quick_filter_toggle",
       "favorite_add", "favorite_remove", "favorites_screen_view",
-      "review_start", "review_submit", "review_like", "review_delete",
+      "review_start", "review_submit", "review_edit", "review_like", "review_delete",
       "naver_map_open",
     ];
     if (!ALLOWED_EVENTS.includes(event)) {
@@ -77,7 +77,7 @@ app.get("/api/reviews/:cafeId", async (req, res) => {
     const { cafeId } = req.params;
     const { data, error } = await supabase
       .from("reviews")
-      .select("id, cafe_id, cafe_name, user_name, tags, text, likes, session_id, is_owner, created_at")
+      .select("id, cafe_id, cafe_name, user_name, tags, text, likes, session_id, is_owner, is_edited, created_at, updated_at")
       .eq("cafe_id", cafeId)
       .eq("is_hidden", false)
       .order("created_at", { ascending: false });
@@ -116,7 +116,50 @@ app.post("/api/reviews", async (req, res) => {
   }
 });
 
-// DELETE /api/reviews/:reviewId — 리뷰 삭제 (session_id 본인 확인)
+// PUT /api/reviews/:reviewId — 리뷰 수정 (session_id 본인 확인)
+app.put("/api/reviews/:reviewId", async (req, res) => {
+  try {
+    const { reviewId } = req.params;
+    const { session_id, tags, text, user_name } = req.body;
+
+    if (!session_id) {
+      return res.status(400).json({ error: "session_id가 필요합니다" });
+    }
+    if (!text || text.trim().length === 0 || text.length > 100) {
+      return res.status(400).json({ error: "리뷰는 1~100자 사이여야 합니다" });
+    }
+
+    // 본인 확인
+    const { data: review, error: fetchError } = await supabase
+      .from("reviews").select("id, session_id").eq("id", reviewId).single();
+    if (fetchError || !review) {
+      return res.status(404).json({ error: "리뷰를 찾을 수 없습니다" });
+    }
+    if (review.session_id !== session_id) {
+      return res.status(403).json({ error: "본인이 작성한 리뷰만 수정할 수 있습니다" });
+    }
+
+    const { data, error } = await supabase
+      .from("reviews")
+      .update({
+        tags: tags ?? [],
+        text: text.trim(),
+        user_name: user_name ?? "익명",
+        is_edited: true,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", reviewId)
+      .select().single();
+
+    if (error) throw error;
+    res.json({ ok: true, review: data });
+  } catch (err) {
+    console.error("[reviews PUT error]", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/reviews/:reviewId — 리뷰 삭제
 app.delete("/api/reviews/:reviewId", async (req, res) => {
   try {
     const { reviewId } = req.params;
@@ -163,52 +206,32 @@ app.patch("/api/reviews/:reviewId/like", async (req, res) => {
 // 통계 API
 // ================================================================
 app.get("/api/stats/top-cafes", async (req, res) => {
-  try {
-    const { data, error } = await supabase.from("top_cafe_clicks").select("*").limit(10);
-    if (error) throw error; res.json(data);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  try { const { data, error } = await supabase.from("top_cafe_clicks").select("*").limit(10); if (error) throw error; res.json(data); }
+  catch (err) { res.status(500).json({ error: err.message }); }
 });
-
 app.get("/api/stats/top-searches", async (req, res) => {
-  try {
-    const { data, error } = await supabase.from("top_searches").select("*").limit(20);
-    if (error) throw error; res.json(data);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  try { const { data, error } = await supabase.from("top_searches").select("*").limit(20); if (error) throw error; res.json(data); }
+  catch (err) { res.status(500).json({ error: err.message }); }
 });
-
 app.get("/api/stats/top-favorites", async (req, res) => {
-  try {
-    const { data, error } = await supabase.from("top_favorites").select("*").limit(10);
-    if (error) throw error; res.json(data);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  try { const { data, error } = await supabase.from("top_favorites").select("*").limit(10); if (error) throw error; res.json(data); }
+  catch (err) { res.status(500).json({ error: err.message }); }
 });
-
 app.get("/api/stats/top-filters", async (req, res) => {
-  try {
-    const { data, error } = await supabase.from("top_filters").select("*").limit(20);
-    if (error) throw error; res.json(data);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  try { const { data, error } = await supabase.from("top_filters").select("*").limit(20); if (error) throw error; res.json(data); }
+  catch (err) { res.status(500).json({ error: err.message }); }
 });
-
 app.get("/api/stats/daily-visits", async (req, res) => {
-  try {
-    const { data, error } = await supabase.from("daily_visits").select("*").limit(30);
-    if (error) throw error; res.json(data);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  try { const { data, error } = await supabase.from("daily_visits").select("*").limit(30); if (error) throw error; res.json(data); }
+  catch (err) { res.status(500).json({ error: err.message }); }
 });
-
 app.get("/api/stats/summary", async (req, res) => {
   try {
-    const { count: totalVisits } = await supabase
-      .from("events").select("*", { count: "exact", head: true }).eq("event", "app_open");
+    const { count: totalVisits } = await supabase.from("events").select("*", { count: "exact", head: true }).eq("event", "app_open");
     const today = new Date(); today.setHours(0, 0, 0, 0);
-    const { count: todayVisits } = await supabase
-      .from("events").select("*", { count: "exact", head: true })
-      .eq("event", "app_open").gte("created_at", today.toISOString());
-    const { count: totalReviews } = await supabase
-      .from("reviews").select("*", { count: "exact", head: true });
-    const { count: totalFavorites } = await supabase
-      .from("events").select("*", { count: "exact", head: true }).eq("event", "favorite_add");
+    const { count: todayVisits } = await supabase.from("events").select("*", { count: "exact", head: true }).eq("event", "app_open").gte("created_at", today.toISOString());
+    const { count: totalReviews } = await supabase.from("reviews").select("*", { count: "exact", head: true });
+    const { count: totalFavorites } = await supabase.from("events").select("*", { count: "exact", head: true }).eq("event", "favorite_add");
     res.json({ total_visits: totalVisits, today_visits: todayVisits, total_reviews: totalReviews, total_favorites: totalFavorites, generated_at: new Date().toISOString() });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
