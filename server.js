@@ -227,6 +227,33 @@ app.patch("/api/reviews/:reviewId/like", async (req, res) => {
 });
 
 // ================================================================
+// 즐겨찾기 수 API
+// ================================================================
+
+// GET /api/favorites/counts — 카페별 즐겨찾기 수 반환
+app.get("/api/favorites/counts", async (req, res) => {
+  try {
+    const { data: adds, error: addError } = await supabase
+      .from("events").select("cafe_id").eq("event", "favorite_add").not("cafe_id", "is", null);
+    if (addError) throw addError;
+
+    const { data: removes, error: removeError } = await supabase
+      .from("events").select("cafe_id").eq("event", "favorite_remove").not("cafe_id", "is", null);
+    if (removeError) throw removeError;
+
+    const counts = {};
+    adds.forEach(({ cafe_id }) => { counts[cafe_id] = (counts[cafe_id] || 0) + 1; });
+    removes.forEach(({ cafe_id }) => { counts[cafe_id] = (counts[cafe_id] || 0) - 1; });
+    Object.keys(counts).forEach(k => { if (counts[k] < 0) counts[k] = 0; });
+
+    res.json(counts);
+  } catch (err) {
+    console.error("[favorites/counts error]", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ================================================================
 // 통계 API
 // ================================================================
 app.get("/api/stats/top-cafes", async (req, res) => {
