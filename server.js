@@ -185,46 +185,43 @@ app.delete("/api/reviews/:reviewId", async (req, res) => {
   }
 });
 
-// PATCH /api/reviews/:reviewId/like — 좋아요
+// PATCH /api/reviews/:reviewId/like — 좋아요 (session_id 기준 중복 방지)
 app.patch("/api/reviews/:reviewId/like", async (req, res) => {
   try {
     const { reviewId } = req.params;
+    const { session_id } = req.body;
+
+    if (!session_id) {
+      return res.status(400).json({ error: "session_id가 필요합니다" });
+    }
+
+    // 이미 좋아요 했는지 확인
+    const { data: existing } = await supabase
+      .from("review_likes")
+      .select("id")
+      .eq("review_id", reviewId)
+      .eq("session_id", session_id)
+      .single();
+
+    if (existing) {
+      return res.status(409).json({ error: "이미 좋아요한 리뷰입니다", already_liked: true });
+    }
+
+    // 좋아요 기록 추가
+    await supabase.from("review_likes").insert({ review_id: reviewId, session_id });
+
+    // likes 카운트 증가
     const { data: review } = await supabase
       .from("reviews").select("likes").eq("id", reviewId).single();
     if (!review) return res.status(404).json({ error: "리뷰를 찾을 수 없습니다" });
+
     const newLikes = (review.likes || 0) + 1;
     const { error } = await supabase
       .from("reviews").update({ likes: newLikes }).eq("id", reviewId);
     if (error) throw error;
+
     res.json({ ok: true, likes: newLikes });
   } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ================================================================
-// 즐겨찾기 수 API
-// ================================================================
-
-// GET /api/favorites/counts — 카페별 즐겨찾기 수 반환
-app.get("/api/favorites/counts", async (req, res) => {
-  try {
-    const { data: adds, error: addError } = await supabase
-      .from("events").select("cafe_id").eq("event", "favorite_add").not("cafe_id", "is", null);
-    if (addError) throw addError;
-
-    const { data: removes, error: removeError } = await supabase
-      .from("events").select("cafe_id").eq("event", "favorite_remove").not("cafe_id", "is", null);
-    if (removeError) throw removeError;
-
-    const counts = {};
-    adds.forEach(({ cafe_id }) => { counts[cafe_id] = (counts[cafe_id] || 0) + 1; });
-    removes.forEach(({ cafe_id }) => { counts[cafe_id] = (counts[cafe_id] || 0) - 1; });
-    Object.keys(counts).forEach(k => { if (counts[k] < 0) counts[k] = 0; });
-
-    res.json(counts);
-  } catch (err) {
-    console.error("[favorites/counts error]", err.message);
     res.status(500).json({ error: err.message });
   }
 });
