@@ -4,7 +4,6 @@
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
-const crypto = require("crypto");
 const { createClient } = require("@supabase/supabase-js");
 
 const app = express();
@@ -38,76 +37,6 @@ app.get("/", (req, res) => {
 });
 
 // ================================================================
-// 유저 API (닉네임 + PIN 기반)
-// ================================================================
-
-const hashPin = (pin) => crypto.createHash("sha256").update(pin).digest("hex");
-
-// POST /api/users/register — 회원가입
-app.post("/api/users/register", async (req, res) => {
-  try {
-    const { nickname, pin } = req.body;
-    if (!nickname || !pin) return res.status(400).json({ error: "닉네임과 PIN이 필요합니다" });
-    if (nickname.length < 2 || nickname.length > 20) return res.status(400).json({ error: "닉네임은 2~20자여야 합니다" });
-    if (!/^\d{4}$/.test(pin)) return res.status(400).json({ error: "PIN은 숫자 4자리여야 합니다" });
-
-    // 닉네임 중복 확인
-    const { data: existing } = await supabase.from("kagong_users").select("id").eq("nickname", nickname).single();
-    if (existing) return res.status(409).json({ error: "이미 사용 중인 닉네임이에요" });
-
-    const { data, error } = await supabase.from("kagong_users")
-      .insert({ nickname, pin_hash: hashPin(pin), favorites: [] })
-      .select("id, nickname, favorites").single();
-    if (error) throw error;
-
-    res.json({ ok: true, user: data });
-  } catch (err) {
-    console.error("[register error]", err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// POST /api/users/login — 로그인
-app.post("/api/users/login", async (req, res) => {
-  try {
-    const { nickname, pin } = req.body;
-    if (!nickname || !pin) return res.status(400).json({ error: "닉네임과 PIN이 필요합니다" });
-
-    const { data: user } = await supabase.from("kagong_users")
-      .select("id, nickname, favorites, pin_hash").eq("nickname", nickname).single();
-
-    if (!user) return res.status(404).json({ error: "존재하지 않는 닉네임이에요" });
-    if (user.pin_hash !== hashPin(pin)) return res.status(401).json({ error: "PIN이 틀렸어요" });
-
-    res.json({ ok: true, user: { id: user.id, nickname: user.nickname, favorites: user.favorites || [] } });
-  } catch (err) {
-    console.error("[login error]", err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// PUT /api/users/:userId/favorites — 즐겨찾기 동기화
-app.put("/api/users/:userId/favorites", async (req, res) => {
-  try {
-    const { userId } = req.params;
-    const { favorites, pin } = req.body;
-    if (!pin || !Array.isArray(favorites)) return res.status(400).json({ error: "pin과 favorites가 필요합니다" });
-
-    const { data: user } = await supabase.from("kagong_users").select("pin_hash").eq("id", userId).single();
-    if (!user) return res.status(404).json({ error: "유저를 찾을 수 없어요" });
-    if (user.pin_hash !== hashPin(pin)) return res.status(401).json({ error: "PIN이 틀렸어요" });
-
-    const { error } = await supabase.from("kagong_users").update({ favorites }).eq("id", userId);
-    if (error) throw error;
-
-    res.json({ ok: true });
-  } catch (err) {
-    console.error("[favorites sync error]", err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ================================================================
 // 이벤트 수집
 // ================================================================
 app.post("/api/track", async (req, res) => {
@@ -135,6 +64,36 @@ app.post("/api/track", async (req, res) => {
   } catch (err) {
     console.error("[track error]", err.message);
     res.status(200).json({ ok: false });
+  }
+});
+
+
+// ================================================================
+// 개선 제안 저장 API
+// ================================================================
+app.post("/api/feedback", async (req, res) => {
+  try {
+    const { text, session_id, user_id, nickname } = req.body;
+
+    if (!text || text.trim().length === 0) {
+      return res.status(400).json({ error: "내용을 입력해주세요" });
+    }
+    if (text.length > 500) {
+      return res.status(400).json({ error: "500자 이내로 입력해주세요" });
+    }
+
+    const { error } = await supabase.from("feedbacks").insert({
+      text:       text.trim(),
+      session_id: session_id ?? null,
+      user_id:    user_id   ?? null,
+      nickname:   nickname  ?? null,
+    });
+
+    if (error) throw error;
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("[feedback error]", err.message);
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -256,49 +215,19 @@ app.delete("/api/reviews/:reviewId", async (req, res) => {
   }
 });
 
-// PATCH /api/reviews/:reviewId/like — 좋아요 (session_id 기준 중복 방지)
+// PATCH /api/reviews/:reviewId/like — 좋아요
 app.patch("/api/reviews/:reviewId/like", async (req, res) => {
   try {
     const { reviewId } = req.params;
-    const { session_id } = req.body;
-    if (!session_id) return res.status(400).json({ error: "session_id가 필요합니다" });
-
-    const { data: existing } = await supabase
-      .from("review_likes").select("id").eq("review_id", reviewId).eq("session_id", session_id).single();
-    if (existing) return res.status(409).json({ error: "이미 좋아요한 리뷰입니다", already_liked: true });
-
-    await supabase.from("review_likes").insert({ review_id: reviewId, session_id });
-
-    const { data: review } = await supabase.from("reviews").select("likes").eq("id", reviewId).single();
+    const { data: review } = await supabase
+      .from("reviews").select("likes").eq("id", reviewId).single();
     if (!review) return res.status(404).json({ error: "리뷰를 찾을 수 없습니다" });
-
     const newLikes = (review.likes || 0) + 1;
-    const { error } = await supabase.from("reviews").update({ likes: newLikes }).eq("id", reviewId);
+    const { error } = await supabase
+      .from("reviews").update({ likes: newLikes }).eq("id", reviewId);
     if (error) throw error;
     res.json({ ok: true, likes: newLikes });
   } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ================================================================
-// 즐겨찾기 수 API
-// ================================================================
-app.get("/api/favorites/counts", async (req, res) => {
-  try {
-    const { data: adds, error: addError } = await supabase
-      .from("events").select("cafe_id").eq("event", "favorite_add").not("cafe_id", "is", null);
-    if (addError) throw addError;
-    const { data: removes, error: removeError } = await supabase
-      .from("events").select("cafe_id").eq("event", "favorite_remove").not("cafe_id", "is", null);
-    if (removeError) throw removeError;
-    const counts = {};
-    adds.forEach(({ cafe_id }) => { counts[cafe_id] = (counts[cafe_id] || 0) + 1; });
-    removes.forEach(({ cafe_id }) => { counts[cafe_id] = (counts[cafe_id] || 0) - 1; });
-    Object.keys(counts).forEach(k => { if (counts[k] < 0) counts[k] = 0; });
-    res.json(counts);
-  } catch (err) {
-    console.error("[favorites/counts error]", err.message);
     res.status(500).json({ error: err.message });
   }
 });
