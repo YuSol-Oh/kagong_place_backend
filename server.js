@@ -36,6 +36,134 @@ app.get("/", (req, res) => {
   res.json({ status: "ok", service: "kagong-backend", time: new Date().toISOString() });
 });
 
+
+// ================================================================
+// 유저 API (회원가입 / 로그인 / 즐겨찾기 동기화)
+// ================================================================
+
+// POST /api/users/register — 회원가입
+app.post("/api/users/register", async (req, res) => {
+  try {
+    const { nickname, pin } = req.body;
+
+    if (!nickname || nickname.trim().length < 2 || nickname.trim().length > 20) {
+      return res.status(400).json({ error: "닉네임은 2~20자 사이여야 합니다" });
+    }
+    if (!pin || !/^\d{4}$/.test(pin)) {
+      return res.status(400).json({ error: "PIN은 숫자 4자리여야 합니다" });
+    }
+
+    // 닉네임 중복 체크
+    const { data: existing } = await supabase
+      .from("users")
+      .select("id")
+      .eq("nickname", nickname.trim())
+      .single();
+
+    if (existing) {
+      return res.status(409).json({ error: "이미 사용 중인 닉네임이에요" });
+    }
+
+    const { data: user, error } = await supabase
+      .from("users")
+      .insert({ nickname: nickname.trim(), pin, favorites: [] })
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    res.json({ ok: true, user: { id: user.id, nickname: user.nickname, pin: user.pin, favorites: user.favorites || [] } });
+  } catch (err) {
+    console.error("[register error]", err.message);
+    res.status(500).json({ error: "서버 오류가 발생했어요" });
+  }
+});
+
+// POST /api/users/login — 로그인
+app.post("/api/users/login", async (req, res) => {
+  try {
+    const { nickname, pin } = req.body;
+
+    if (!nickname || !pin) {
+      return res.status(400).json({ error: "닉네임과 PIN을 입력해주세요" });
+    }
+
+    const { data: user, error } = await supabase
+      .from("users")
+      .select("*")
+      .eq("nickname", nickname.trim())
+      .single();
+
+    if (error || !user) {
+      return res.status(404).json({ error: "닉네임을 찾을 수 없어요" });
+    }
+
+    if (user.pin !== pin) {
+      return res.status(401).json({ error: "PIN이 올바르지 않아요" });
+    }
+
+    res.json({ ok: true, user: { id: user.id, nickname: user.nickname, pin: user.pin, favorites: user.favorites || [] } });
+  } catch (err) {
+    console.error("[login error]", err.message);
+    res.status(500).json({ error: "서버 오류가 발생했어요" });
+  }
+});
+
+// PUT /api/users/:userId/favorites — 즐겨찾기 동기화
+app.put("/api/users/:userId/favorites", async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { favorites, pin } = req.body;
+
+    if (!Array.isArray(favorites)) {
+      return res.status(400).json({ error: "favorites는 배열이어야 합니다" });
+    }
+
+    // PIN 검증
+    const { data: user } = await supabase
+      .from("users").select("pin").eq("id", userId).single();
+
+    if (!user || user.pin !== pin) {
+      return res.status(403).json({ error: "인증 실패" });
+    }
+
+    const { error } = await supabase
+      .from("users")
+      .update({ favorites })
+      .eq("id", userId);
+
+    if (error) throw error;
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("[favorites sync error]", err.message);
+    res.status(500).json({ error: "서버 오류가 발생했어요" });
+  }
+});
+
+// GET /api/favorites/counts — 카페별 즐겨찾기 수 집계
+app.get("/api/favorites/counts", async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from("users")
+      .select("favorites");
+
+    if (error) throw error;
+
+    // 카페 ID별 카운트 집계
+    const counts = {};
+    (data || []).forEach(row => {
+      (row.favorites || []).forEach(cafeId => {
+        counts[cafeId] = (counts[cafeId] || 0) + 1;
+      });
+    });
+
+    res.json(counts);
+  } catch (err) {
+    console.error("[favorites counts error]", err.message);
+    res.json({});
+  }
+});
+
 // ================================================================
 // 이벤트 수집
 // ================================================================
